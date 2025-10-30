@@ -1,4 +1,4 @@
-# 🐍 My-Project
+# My-Project
 
 ![Python](https://img.shields.io/badge/Python-3.x-blue?logo=python&logoColor=white)
 ![Research Only](https://img.shields.io/badge/Research--Only-yellow)
